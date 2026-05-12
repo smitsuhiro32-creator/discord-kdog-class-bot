@@ -9,6 +9,7 @@ const {
   GatewayIntentBits,
   EmbedBuilder,
   SlashCommandBuilder,
+  PermissionFlagsBits,
 } = require('discord.js');
 
 const dayjs = require('dayjs');
@@ -30,7 +31,19 @@ const {
 } = process.env;
 
 const TZ = TIMEZONE || 'Asia/Tokyo';
-const NOTIFY_BEFORE = Number(NOTIFY_MINUTES_BEFORE || 30);
+function getNotifyBeforeMinutes() {
+  const minutes = Number(process.env.NOTIFY_MINUTES_BEFORE || 30);
+
+  if (Number.isNaN(minutes) || minutes <= 0) {
+    return 30;
+  }
+
+  return minutes;
+}
+
+function getDailySummaryTime() {
+  return process.env.DAILY_SUMMARY_TIME || '07:00';
+}
 
 const SENT_FILE = process.env.SENT_FILE || path.join(__dirname, 'sent.json');
 
@@ -185,6 +198,8 @@ async function notifyClass(classInfo) {
     return;
   }
 
+  const notifyBefore = getNotifyBeforeMinutes();
+
   const embed = new EmbedBuilder()
     .setTitle('授業のお知らせ')
     .setColor(0x3b82f6)
@@ -216,14 +231,12 @@ async function notifyClass(classInfo) {
       }
     )
     .setFooter({
-      text: `${NOTIFY_BEFORE}分前通知`,
+      text: `${notifyBefore}分前通知`,
     });
 
   await channel.send({
-    content: `${NOTIFY_BEFORE}分後に授業があります。`,
+    content: `${notifyBefore}分後に授業があります。`,
     embeds: [embed],
-
-    // 念のため @everyone / @here / ロールメンションを無効化
     allowedMentions: {
       parse: [],
     },
@@ -303,6 +316,18 @@ async function registerCommands() {
       .setName('reload')
       .setDescription('スプレッドシートを再読み込みします')
       .toJSON(),
+
+    new SlashCommandBuilder()
+      .setName('send')
+      .setDescription('Botから任意メッセージを送信します')
+      .addStringOption((option) =>
+        option
+          .setName('message')
+          .setDescription('送信するメッセージ')
+          .setRequired(true)
+      )
+      .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
+      .toJSON(),
   ];
 
   if (process.env.GUILD_ID) {
@@ -352,7 +377,8 @@ async function checkSchedule() {
         continue;
       }
 
-      const notifyAt = startAt.subtract(NOTIFY_BEFORE, 'minute');
+      const notifyBefore = getNotifyBeforeMinutes();
+      const notifyAt = startAt.subtract(notifyBefore, 'minute');
 
       const key = createClassKey(classInfo);
 
@@ -410,8 +436,24 @@ client.once('clientReady', async () => {
 
   checkSchedule().catch(console.error);
 
+  // 毎分、授業開始前通知をチェック
   cron.schedule('* * * * *', () => {
     checkSchedule().catch(console.error);
+  }, {
+    timezone: TZ,
+  });
+
+  // 毎朝の授業一覧送信
+  const dailyTime = getDailySummaryTime();
+  const [dailyHour, dailyMinute] = dailyTime.split(':');
+
+  const dailyCron = `${Number(dailyMinute)} ${Number(dailyHour)} * * *`;
+
+  console.log(`毎朝の授業一覧送信スケジュール: ${dailyTime}`);
+  console.log(`cron: ${dailyCron}`);
+
+  cron.schedule(dailyCron, () => {
+    sendDailySummary().catch(console.error);
   }, {
     timezone: TZ,
   });
@@ -470,6 +512,61 @@ client.on('interactionCreate', async (interaction) => {
         today,
         classes
       );
+
+      async function sendDailySummary() {
+        const today = dayjs().tz(TZ).format('YYYY-MM-DD');
+        const sent = loadSent();
+
+        const dailyKey = `daily_summary_${today}_${DEFAULT_CHANNEL_ID}`;
+
+        if (sent[dailyKey]) {
+          console.log(`今日の授業一覧は既に送信済みです: ${today}`);
+          return;
+        }
+
+        if (!DEFAULT_CHANNEL_ID) {
+          console.log('DEFAULT_CHANNEL_ID が設定されていないため、朝の授業一覧を送信できません');
+          return;
+        }
+
+        try {
+          const classes = await reloadClasses();
+
+          const embed = createScheduleListEmbed(
+            '今日の授業予定',
+            today,
+            classes
+          );
+
+          const channel = await client.channels.fetch(DEFAULT_CHANNEL_ID);
+
+          if (!channel) {
+            console.log(`チャンネルが見つかりません: ${DEFAULT_CHANNEL_ID}`);
+            return;
+          }
+
+          await channel.send({
+            content: 'おはようございます。本日の授業予定です。',
+            embeds: [embed],
+            allowedMentions: {
+              parse: [],
+            },
+          });
+
+          sent[dailyKey] = {
+            sentAt: dayjs().tz(TZ).format(),
+            date: today,
+            channelId: DEFAULT_CHANNEL_ID,
+          };
+
+          saveSent(sent);
+
+          console.log(`今日の授業一覧を送信しました: ${today}`);
+        } catch (error) {
+          console.error('今日の授業一覧の送信に失敗しました');
+          console.error(getErrorMessage(error));
+        }
+      }
 
       await interaction.editReply({
         embeds: [embed],
@@ -545,6 +642,44 @@ client.on('interactionCreate', async (interaction) => {
       } else {
         await interaction.reply({
           content: 'スプレッドシートの再読み込みに失敗しました。',
+          ephemeral: true,
+        });
+      }
+    }
+
+    return;
+  }
+  if (interaction.commandName === 'send') {
+    try {
+      await interaction.deferReply({
+        ephemeral: true,
+      });
+
+      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageMessages)) {
+        await interaction.editReply('このコマンドを使う権限がありません。');
+        return;
+      }
+
+      const message = interaction.options.getString('message', true);
+
+      await interaction.channel.send({
+        content: message,
+        allowedMentions: {
+          parse: [],
+        },
+      });
+
+      await interaction.editReply('メッセージを送信しました。');
+    } catch (error) {
+      console.error(error);
+
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply(
+          `メッセージ送信に失敗しました。\n原因: ${getErrorMessage(error)}`
+        );
+      } else {
+        await interaction.reply({
+          content: `メッセージ送信に失敗しました。\n原因: ${getErrorMessage(error)}`,
           ephemeral: true,
         });
       }
