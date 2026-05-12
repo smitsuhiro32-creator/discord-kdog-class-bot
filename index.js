@@ -688,18 +688,18 @@ client.on('interactionCreate', async (interaction) => {
       const classes = await reloadClasses();
 
       await interaction.editReply(
-        `スプレッドシートを再読み込みしました。\n読み込み件数: ${classes.length}件\n最終読み込み: ${lastLoadedAt.format('YYYY-MM-DD HH:mm:ss')}`
+        `スプレッドシートを再読み込みしたわん...\n読み込み件数: ${classes.length}件\n最終読み込み: ${lastLoadedAt.format('YYYY-MM-DD HH:mm:ss')}`
       );
     } catch (error) {
       console.error(error);
 
       if (interaction.deferred || interaction.replied) {
         await interaction.editReply(
-          `スプレッドシートの再読み込みに失敗しました。\n原因: ${getErrorMessage(error)}`
+          `スプレッドシートの再読み込みに失敗したわん...\n原因: ${getErrorMessage(error)}`
         );
       } else {
         await interaction.reply({
-          content: 'スプレッドシートの再読み込みに失敗しました。',
+          content: 'スプレッドシートの再読み込みに失敗したわん...',
           ephemeral: true,
         });
       }
@@ -731,17 +731,17 @@ client.on('interactionCreate', async (interaction) => {
         },
       });
 
-      await interaction.editReply('メッセージを送信しました。');
+      await interaction.editReply('メッセージを送信したわん！');
     } catch (error) {
       console.error(error);
 
       if (interaction.deferred || interaction.replied) {
         await interaction.editReply(
-          `メッセージ送信に失敗しました。\n原因: ${getErrorMessage(error)}`
+          `メッセージ送信に失敗したわん...\n原因: ${getErrorMessage(error)}`
         );
       } else {
         await interaction.reply({
-          content: `メッセージ送信に失敗しました。\n原因: ${getErrorMessage(error)}`,
+          content: `メッセージ送信に失敗したわん...\n原因: ${getErrorMessage(error)}`,
           ephemeral: true,
         });
       }
