@@ -295,6 +295,61 @@ function createScheduleListEmbed(title, targetDate, classes) {
   return embed;
 }
 
+async function sendDailySummary() {
+  const today = dayjs().tz(TZ).format('YYYY-MM-DD');
+
+  if (!DEFAULT_CHANNEL_ID) {
+    console.log('DEFAULT_CHANNEL_ID が設定されていないため、朝の授業一覧を送信できません');
+    return;
+  }
+
+  const sent = loadSent();
+  const dailyKey = `daily_summary_${today}_${DEFAULT_CHANNEL_ID}`;
+
+  if (sent[dailyKey]) {
+    console.log(`今日の授業一覧は既に送信済みです: ${today}`);
+    return;
+  }
+
+  try {
+    const classes = await reloadClasses();
+
+    const embed = createScheduleListEmbed(
+      '今日の授業予定',
+      today,
+      classes
+    );
+
+    const channel = await client.channels.fetch(DEFAULT_CHANNEL_ID);
+
+    if (!channel) {
+      console.log(`チャンネルが見つかりません: ${DEFAULT_CHANNEL_ID}`);
+      return;
+    }
+
+    await channel.send({
+      content: 'おはようございます。本日の授業予定です。',
+      embeds: [embed],
+      allowedMentions: {
+        parse: [],
+      },
+    });
+
+    sent[dailyKey] = {
+      sentAt: dayjs().tz(TZ).format(),
+      date: today,
+      channelId: DEFAULT_CHANNEL_ID,
+    };
+
+    saveSent(sent);
+
+    console.log(`今日の授業一覧を送信しました: ${today}`);
+  } catch (error) {
+    console.error('今日の授業一覧の送信に失敗しました');
+    console.error(getErrorMessage(error));
+  }
+}
+
 async function registerCommands() {
   const commands = [
     new SlashCommandBuilder()
@@ -326,7 +381,6 @@ async function registerCommands() {
           .setDescription('送信するメッセージ')
           .setRequired(true)
       )
-      .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
       .toJSON(),
   ];
 
@@ -338,6 +392,8 @@ async function registerCommands() {
     await client.application.commands.set(commands);
     console.log('グローバルスラッシュコマンドを登録しました');
   }
+
+  console.log('登録コマンド: test, today, tomorrow, reload, send');
 }
 
 async function checkSchedule() {
@@ -431,6 +487,8 @@ async function checkSchedule() {
 
 client.once('clientReady', async () => {
   console.log(`ログインしました: ${client.user.tag}`);
+  console.log(`通知時間: ${getNotifyBeforeMinutes()}分前`);
+  console.log(`朝の授業一覧送信時刻: ${getDailySummaryTime()}`);
 
   await registerCommands().catch(console.error);
 
@@ -655,7 +713,11 @@ client.on('interactionCreate', async (interaction) => {
         ephemeral: true,
       });
 
-      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageMessages)) {
+      const hasPermission =
+        interaction.memberPermissions?.has(PermissionFlagsBits.ManageMessages) ||
+        interaction.memberPermissions?.has(PermissionFlagsBits.Administrator);
+
+      if (!hasPermission) {
         await interaction.editReply('このコマンドを使う権限がありません。');
         return;
       }
