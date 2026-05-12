@@ -177,7 +177,7 @@ function createClassKey(classInfo) {
   return `${classInfo.date}_${classInfo.start}_${classInfo.subject}_${classInfo.channelId}`;
 }
 
-async function notifyClass(classInfo, options = {}) {
+async function notifyClass(classInfo) {
   const channel = await client.channels.fetch(classInfo.channelId);
 
   if (!channel) {
@@ -196,7 +196,7 @@ async function notifyClass(classInfo, options = {}) {
       },
       {
         name: '時間',
-        value: `${classInfo.start} - ${classInfo.end || '未入力'}`,
+        value: `${classInfo.start || '未入力'} - ${classInfo.end || '未入力'}`,
         inline: true,
       },
       {
@@ -219,11 +219,14 @@ async function notifyClass(classInfo, options = {}) {
       text: `${NOTIFY_BEFORE}分前通知`,
     });
 
-  // const mention = options.mentionEveryone === false ? '' : '@everyone ';
-
   await channel.send({
-    content: `${mention}${NOTIFY_BEFORE}分後に授業があります。`,
+    content: `${NOTIFY_BEFORE}分後に授業があります。`,
     embeds: [embed],
+
+    // 念のため @everyone / @here / ロールメンションを無効化
+    allowedMentions: {
+      parse: [],
+    },
   });
 
   console.log(`通知しました: ${classInfo.subject}`);
