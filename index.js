@@ -90,16 +90,16 @@ function getGoogleCredentialsPath() {
 
 async function getSheetsClient() {
   if (!SPREADSHEET_ID) {
-    throw new Error('SPREADSHEET_ID が設定されていません。Renderまたは.envを確認してください。');
+    throw new Error('SPREADSHEET_ID が設定されていないわん。Renderまたは.envを確認してくれわん。');
   }
 
   const credentialsPath = getGoogleCredentialsPath();
 
   if (!fs.existsSync(credentialsPath)) {
     throw new Error(
-      `Google認証ファイルが見つかりません: ${credentialsPath}\n` +
-      `ローカルの場合は credentials.json をプロジェクト直下に置いてください。\n` +
-      `Renderの場合は Secret File に credentials.json を追加し、GOOGLE_APPLICATION_CREDENTIALS=/etc/secrets/credentials.json を設定してください。`
+      `Google認証ファイルが見つからないわん: ${credentialsPath}\n` +
+      `ローカルの場合は credentials.json をプロジェクト直下に置いてくれわん。\n` +
+      `Renderの場合は Secret File に credentials.json を追加し、GOOGLE_APPLICATION_CREDENTIALS=/etc/secrets/credentials.json を設定してわん。`
     );
   }
 
@@ -120,7 +120,7 @@ async function fetchClasses() {
 
     const range = SHEET_RANGE || '授業!A2:G';
 
-    console.log('Google Sheets 読み込み開始');
+    console.log('Google Sheets 読み込み開始だわん');
     console.log(`SPREADSHEET_ID: ${SPREADSHEET_ID}`);
     console.log(`SHEET_RANGE: ${range}`);
 
@@ -131,7 +131,7 @@ async function fetchClasses() {
 
     const rows = res.data.values || [];
 
-    console.log(`Google Sheets 読み込み成功: ${rows.length}行`);
+    console.log(`Google Sheets 読み込み成功したわん: ${rows.length}行`);
 
     return rows
       .filter((row) => row && row.some((cell) => cell !== undefined && cell !== ''))
@@ -157,7 +157,7 @@ async function fetchClasses() {
         };
       });
   } catch (error) {
-    console.error('Google Sheets の取得に失敗しました');
+    console.error('Google Sheets の取得に失敗しちゃったわん');
     console.error(getErrorMessage(error));
     throw error;
   }
@@ -168,11 +168,11 @@ async function reloadClasses() {
     classCache = await fetchClasses();
     lastLoadedAt = dayjs().tz(TZ);
 
-    console.log(`スプレッドシートを再読み込みしました: ${classCache.length}件`);
+    console.log(`スプレッドシートを再読み込みしたわん: ${classCache.length}件`);
 
     return classCache;
   } catch (error) {
-    console.error('reloadClasses でエラーが発生しました');
+    console.error('reloadClasses でエラーが発生しましたわん');
     console.error(getErrorMessage(error));
     throw error;
   }
@@ -194,14 +194,14 @@ async function notifyClass(classInfo) {
   const channel = await client.channels.fetch(classInfo.channelId);
 
   if (!channel) {
-    console.log(`チャンネルが見つかりません: ${classInfo.channelId}`);
+    console.log(`チャンネルが見つからないわん: ${classInfo.channelId}`);
     return;
   }
 
   const notifyBefore = getNotifyBeforeMinutes();
 
   const embed = new EmbedBuilder()
-    .setTitle('授業のお知らせ')
+    .setTitle('授業のお知らせだわん。')
     .setColor(0x3b82f6)
     .addFields(
       {
@@ -220,7 +220,7 @@ async function notifyClass(classInfo) {
         inline: true,
       },
       {
-        name: '先生',
+        name: '担当',
         value: classInfo.teacher || '未入力',
         inline: true,
       },
@@ -235,7 +235,7 @@ async function notifyClass(classInfo) {
     });
 
   await channel.send({
-    content: `${notifyBefore}分後に授業があります。`,
+    content: `${notifyBefore}分後に授業があるわんよ！`,
     embeds: [embed],
     allowedMentions: {
       parse: [],
@@ -257,7 +257,7 @@ function createScheduleListEmbed(title, targetDate, classes) {
   let description = '';
 
   if (targetClasses.length === 0) {
-    description = '授業予定はありません。';
+    description = '授業予定はないわん。';
   } else {
     description = targetClasses
       .map((classInfo, index) => {
@@ -315,7 +315,7 @@ async function sendDailySummary() {
     const classes = await reloadClasses();
 
     const embed = createScheduleListEmbed(
-      '今日の授業予定',
+      '今日の授業予定だわん。',
       today,
       classes
     );
@@ -328,7 +328,7 @@ async function sendDailySummary() {
     }
 
     await channel.send({
-      content: 'おはようございます。本日の授業予定です。',
+      content: 'みんなおはよぉ！本日の授業予定だわん！',
       embeds: [embed],
       allowedMentions: {
         parse: [],
@@ -354,27 +354,27 @@ async function registerCommands() {
   const commands = [
     new SlashCommandBuilder()
       .setName('test')
-      .setDescription('授業通知のテストを送信します')
+      .setDescription('授業通知のテストを送信するわん')
       .toJSON(),
 
     new SlashCommandBuilder()
       .setName('today')
-      .setDescription('今日の授業一覧を表示します')
+      .setDescription('今日の授業一覧を表示するわん')
       .toJSON(),
 
     new SlashCommandBuilder()
       .setName('tomorrow')
-      .setDescription('明日の授業一覧を表示します')
+      .setDescription('明日の授業一覧を表示するわん')
       .toJSON(),
 
     new SlashCommandBuilder()
       .setName('reload')
-      .setDescription('スプレッドシートを再読み込みします')
+      .setDescription('スプレッドシートを再読み込みするわん')
       .toJSON(),
 
     new SlashCommandBuilder()
       .setName('send')
-      .setDescription('Botから任意メッセージを送信します')
+      .setDescription('Botから任意メッセージを送信するわん')
       .addStringOption((option) =>
         option
           .setName('message')
@@ -398,7 +398,7 @@ async function registerCommands() {
 
 async function checkSchedule() {
   if (isCheckingSchedule) {
-    console.log('前回の授業予定チェックがまだ実行中のため、今回はスキップします');
+    console.log('前回の授業予定チェックがまだ実行中のため、今回はスキップするわん');
     return;
   }
 
@@ -566,7 +566,7 @@ client.on('interactionCreate', async (interaction) => {
       const today = dayjs().tz(TZ).format('YYYY-MM-DD');
 
       const embed = createScheduleListEmbed(
-        '今日の授業一覧',
+        '今日の授業一覧だわん',
         today,
         classes
       );
@@ -591,7 +591,7 @@ client.on('interactionCreate', async (interaction) => {
           const classes = await reloadClasses();
 
           const embed = createScheduleListEmbed(
-            '今日の授業予定',
+            '今日の授業予定だわん。',
             today,
             classes
           );
@@ -604,7 +604,7 @@ client.on('interactionCreate', async (interaction) => {
           }
 
           await channel.send({
-            content: 'おはようございます。本日の授業予定です。',
+            content: 'みんなおはよぉ！本日の授業予定だわん！',
             embeds: [embed],
             allowedMentions: {
               parse: [],
@@ -718,7 +718,7 @@ client.on('interactionCreate', async (interaction) => {
         interaction.memberPermissions?.has(PermissionFlagsBits.Administrator);
 
       if (!hasPermission) {
-        await interaction.editReply('このコマンドを使う権限がありません。');
+        await interaction.editReply('このコマンドを使う権限がないわん...');
         return;
       }
 
