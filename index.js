@@ -853,6 +853,22 @@ client.once('clientReady', async () => {
   }, {
     timezone: TZ,
   });
+
+  if (isTrainInfoEnabled()) {
+    const trainInterval = getTrainCheckIntervalMinutes();
+
+    console.log(`山手線運行情報チェック: ${trainInterval}分ごとだわん`);
+
+    // 起動時に一度チェックするわん
+    checkTrainInfo().catch(console.error);
+
+    // 定期チェックするわん
+    cron.schedule(`*/${trainInterval} * * * *`, () => {
+      checkTrainInfo().catch(console.error);
+    }, {
+      timezone: TZ,
+    });
+  }
 });
 
 client.on('interactionCreate', async (interaction) => {
