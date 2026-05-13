@@ -682,51 +682,54 @@ async function registerCommands() {
   const commands = [
     new SlashCommandBuilder()
       .setName('test')
-      .setDescription('授業通知のテストを送信するわん')
+      .setDescription('授業通知のテストを送るわん')
       .toJSON(),
 
     new SlashCommandBuilder()
       .setName('today')
-      .setDescription('今日の授業一覧を表示するわん')
+      .setDescription('今日の授業一覧を見せるわん')
       .toJSON(),
 
     new SlashCommandBuilder()
       .setName('tomorrow')
-      .setDescription('明日の授業一覧を表示するわん')
+      .setDescription('明日の授業一覧を見せるわん')
       .toJSON(),
 
     new SlashCommandBuilder()
       .setName('reload')
-      .setDescription('スプレッドシートを再読み込みするわん')
+      .setDescription('スプレッドシートを読み直すわん')
       .toJSON(),
 
     new SlashCommandBuilder()
       .setName('send')
-      .setDescription('Botから任意メッセージを送信するわん')
+      .setDescription('Botからメッセージを送るわん')
       .addStringOption((option) =>
         option
           .setName('message')
-          .setDescription('送信するメッセージ')
+          .setDescription('送信するメッセージだわん')
           .setRequired(true)
       )
       .toJSON(),
 
     new SlashCommandBuilder()
       .setName('train')
-      .setDescription('山手線の運行情報を確認します')
+      .setDescription('山手線の運行情報を確認するわん')
       .toJSON(),
   ];
+
+  // 重要：過去に登録したグローバルコマンドを削除する
+  await client.application.commands.set([]);
+  console.log('グローバルスラッシュコマンドを削除したわん');
 
   if (process.env.GUILD_ID) {
     const guild = await client.guilds.fetch(process.env.GUILD_ID);
     await guild.commands.set(commands);
-    console.log('サーバー専用スラッシュコマンドを登録しました');
+    console.log(`サーバー専用スラッシュコマンドを登録したわん: ${process.env.GUILD_ID}`);
   } else {
-    await client.application.commands.set(commands);
-    console.log('グローバルスラッシュコマンドを登録しました');
+    console.log('GUILD_ID が設定されていないわん。サーバー専用コマンドを登録できないわん…');
   }
 
-  console.log('登録コマンド: test, today, tomorrow, reload, send');
+  console.log('登録コマンドだわん: test, today, tomorrow, reload, send, train');
 }
 
 async function checkSchedule() {
