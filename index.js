@@ -2,6 +2,7 @@ require('dotenv').config();
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const cron = require('node-cron');
 const { google } = require('googleapis');
 const {
@@ -39,6 +40,40 @@ function getNotifyBeforeMinutes() {
   }
 
   return minutes;
+}
+
+function isTrainInfoEnabled() {
+  return process.env.TRAIN_INFO_ENABLED === 'true';
+}
+
+function getTrainLineName() {
+  return process.env.TRAIN_LINE_NAME || '山手線';
+}
+
+function getTrainInfoUrl() {
+  return process.env.TRAIN_INFO_URL || 'https://transit.yahoo.co.jp/diainfo/21/0';
+}
+
+function getTrainInfoChannelId() {
+  return process.env.TRAIN_INFO_CHANNEL_ID || DEFAULT_CHANNEL_ID;
+}
+
+function getTrainCheckIntervalMinutes() {
+  const minutes = Number(process.env.TRAIN_CHECK_INTERVAL_MINUTES || 5);
+
+  if (Number.isNaN(minutes) || minutes <= 0) {
+    return 5;
+  }
+
+  return Math.min(minutes, 60);
+}
+
+function shouldNotifyNormalTrainStatus() {
+  return process.env.TRAIN_NOTIFY_NORMAL === 'true';
+}
+
+function createHash(text) {
+  return crypto.createHash('sha256').update(text).digest('hex');
 }
 
 function getDailySummaryTime() {
@@ -188,6 +223,195 @@ async function getClasses() {
 
 function createClassKey(classInfo) {
   return `${classInfo.date}_${classInfo.start}_${classInfo.subject}_${classInfo.channelId}`;
+}
+
+function stripHtml(html) {
+  return String(html || '')
+    .replace(/<!--.*?-->/g, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isTrainTroubleStatus(statusText) {
+  const text = String(statusText || '');
+
+  return !(
+    text.includes('平常') ||
+    text.includes('通常') ||
+    text.includes('現在､事故･遅延に関する情報はありません')
+  );
+}
+
+async function fetchTrainInfo() {
+  const url = getTrainInfoUrl();
+  const lineName = getTrainLineName();
+
+  console.log(`${lineName} 運行情報を取得中...`);
+  console.log(`URL: ${url}`);
+
+  const res = await fetch(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 DiscordBot TrainInfoChecker',
+      'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
+    },
+  });
+
+  if (!res.ok) {
+    throw new Error(`運行情報ページの取得に失敗しました: HTTP ${res.status}`);
+  }
+
+  const html = await res.text();
+
+  const updateMatch = html.match(/<span class="subText">([\s\S]*?)<\/span>/);
+  const updatedAt = updateMatch ? stripHtml(updateMatch[1]) : '更新時刻不明';
+
+  const statusBlockMatch = html.match(/<div id="mdServiceStatus">([\s\S]*?)<\/div>\s*<div/);
+  const statusBlock = statusBlockMatch ? statusBlockMatch[1] : html;
+
+  const statusMatch = statusBlock.match(/<dt[^>]*>([\s\S]*?)<\/dt>/);
+  const status = statusMatch ? stripHtml(statusMatch[1]) : '状態不明';
+
+  const messageMatch = statusBlock.match(/<dd[^>]*>([\s\S]*?)<\/dd>/);
+  const message = messageMatch
+    ? stripHtml(messageMatch[1])
+    : '詳細情報を取得できませんでした。';
+
+  const hasTrouble = isTrainTroubleStatus(status);
+
+  return {
+    lineName,
+    status,
+    message,
+    updatedAt,
+    url,
+    hasTrouble,
+  };
+}
+
+function createTrainInfoEmbed(trainInfo) {
+  const color = trainInfo.hasTrouble ? 0xef4444 : 0x22c55e;
+
+  return new EmbedBuilder()
+    .setTitle(`${trainInfo.lineName} 運行情報`)
+    .setColor(color)
+    .addFields(
+      {
+        name: '状態',
+        value: trainInfo.status || '不明',
+        inline: true,
+      },
+      {
+        name: '更新',
+        value: trainInfo.updatedAt || '不明',
+        inline: true,
+      },
+      {
+        name: '詳細',
+        value: trainInfo.message || '詳細なし',
+      }
+    )
+    .setURL(trainInfo.url)
+    .setFooter({
+      text: '情報元: Yahoo!路線情報',
+    })
+    .setTimestamp();
+}
+
+async function checkTrainInfo(options = {}) {
+  const force = options.force || false;
+  const replyChannelId = options.channelId || null;
+
+  if (!isTrainInfoEnabled() && !force) {
+    console.log('山手線運行情報通知は無効です');
+    return;
+  }
+
+  const trainInfo = await fetchTrainInfo();
+
+  const channelId = replyChannelId || getTrainInfoChannelId();
+
+  if (!channelId) {
+    console.log('TRAIN_INFO_CHANNEL_ID または DEFAULT_CHANNEL_ID が設定されていません');
+    return;
+  }
+
+  const sent = loadSent();
+  const stateKey = `train_info_${trainInfo.lineName}_last`;
+
+  const currentHash = createHash(
+    JSON.stringify({
+      status: trainInfo.status,
+      message: trainInfo.message,
+      updatedAt: trainInfo.updatedAt,
+    })
+  );
+
+  const previous = sent[stateKey];
+
+  const changed = !previous || previous.hash !== currentHash;
+  const recovered = previous?.hasTrouble === true && trainInfo.hasTrouble === false;
+
+  const shouldSend =
+    force ||
+    trainInfo.hasTrouble && changed ||
+    recovered ||
+    shouldNotifyNormalTrainStatus() && changed;
+
+  if (!shouldSend) {
+    console.log(`${trainInfo.lineName} 運行情報に変化なし: ${trainInfo.status}`);
+    return;
+  }
+
+  const channelResult = await getNotificationChannel(channelId);
+
+  if (!channelResult.ok) {
+    console.log(`山手線運行情報の通知をスキップしました: ${channelResult.reason}`);
+    return;
+  }
+
+  const channel = channelResult.channel;
+  const embed = createTrainInfoEmbed(trainInfo);
+
+  let content = '';
+
+  if (force) {
+    content = `${trainInfo.lineName} の現在の運行情報です。`;
+  } else if (trainInfo.hasTrouble) {
+    content = `${trainInfo.lineName} に運行情報があります。`;
+  } else if (recovered) {
+    content = `${trainInfo.lineName} は平常運転に戻った可能性があります。`;
+  } else {
+    content = `${trainInfo.lineName} の運行情報です。`;
+  }
+
+  await channel.send({
+    content,
+    embeds: [embed],
+    allowedMentions: {
+      parse: [],
+    },
+  });
+
+  sent[stateKey] = {
+    hash: currentHash,
+    status: trainInfo.status,
+    message: trainInfo.message,
+    updatedAt: trainInfo.updatedAt,
+    hasTrouble: trainInfo.hasTrouble,
+    checkedAt: dayjs().tz(TZ).format(),
+  };
+
+  saveSent(sent);
+
+  console.log(`${trainInfo.lineName} 運行情報を通知しました: ${trainInfo.status}`);
 }
 
 async function notifyClass(classInfo) {
@@ -381,6 +605,11 @@ async function registerCommands() {
           .setDescription('送信するメッセージ')
           .setRequired(true)
       )
+      .toJSON(),
+
+    new SlashCommandBuilder()
+      .setName('train')
+      .setDescription('山手線の運行情報を確認します')
       .toJSON(),
   ];
 
@@ -742,6 +971,34 @@ client.on('interactionCreate', async (interaction) => {
       } else {
         await interaction.reply({
           content: `メッセージ送信に失敗したわん...\n原因: ${getErrorMessage(error)}`,
+          ephemeral: true,
+        });
+      }
+    }
+
+    return;
+  }
+  if (interaction.commandName === 'train') {
+    try {
+      await interaction.deferReply();
+
+      const trainInfo = await fetchTrainInfo();
+      const embed = createTrainInfoEmbed(trainInfo);
+
+      await interaction.editReply({
+        content: `${trainInfo.lineName} の現在の運行情報です。`,
+        embeds: [embed],
+      });
+    } catch (error) {
+      console.error(error);
+
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply(
+          `山手線の運行情報取得に失敗しました。\n原因: ${getErrorMessage(error)}`
+        );
+      } else {
+        await interaction.reply({
+          content: `山手線の運行情報取得に失敗しました。\n原因: ${getErrorMessage(error)}`,
           ephemeral: true,
         });
       }
