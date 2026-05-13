@@ -54,6 +54,55 @@ function getTrainInfoUrl() {
   return process.env.TRAIN_INFO_URL || 'https://transit.yahoo.co.jp/diainfo/21/0';
 }
 
+function isQuietHoursEnabled() {
+  return process.env.QUIET_HOURS_ENABLED === 'true';
+}
+
+function getQuietHoursStart() {
+  return process.env.QUIET_HOURS_START || '20:00';
+}
+
+function getQuietHoursEnd() {
+  return process.env.QUIET_HOURS_END || '06:00';
+}
+
+function timeToMinutes(timeText) {
+  const [hourText, minuteText] = String(timeText || '00:00').split(':');
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+
+  if (
+    Number.isNaN(hour) ||
+    Number.isNaN(minute) ||
+    hour < 0 ||
+    hour > 23 ||
+    minute < 0 ||
+    minute > 59
+  ) {
+    return 0;
+  }
+
+  return hour * 60 + minute;
+}
+
+function isInQuietHours(now = dayjs().tz(TZ)) {
+  if (!isQuietHoursEnabled()) {
+    return false;
+  }
+
+  const currentMinutes = now.hour() * 60 + now.minute();
+  const startMinutes = timeToMinutes(getQuietHoursStart());
+  const endMinutes = timeToMinutes(getQuietHoursEnd());
+
+  // 例: 20:00〜06:00 のように日付をまたぐ場合
+  if (startMinutes > endMinutes) {
+    return currentMinutes >= startMinutes || currentMinutes < endMinutes;
+  }
+
+  // 例: 01:00〜05:00 のように同日内の場合
+  return currentMinutes >= startMinutes && currentMinutes < endMinutes;
+}
+
 function getTrainInfoChannelId() {
   return process.env.TRAIN_INFO_CHANNEL_ID || DEFAULT_CHANNEL_ID;
 }
@@ -213,6 +262,24 @@ async function reloadClasses() {
   }
 }
 
+function isTrainNotifyOnlyClassDays() {
+  return process.env.TRAIN_NOTIFY_ONLY_CLASS_DAYS === 'true';
+}
+
+function isDailySummaryOnlyClassDays() {
+  return process.env.DAILY_SUMMARY_ONLY_CLASS_DAYS !== 'false';
+}
+
+function hasClassesOnDate(classes, targetDate) {
+  return classes.some((classInfo) => {
+    return (
+      classInfo.date === targetDate &&
+      classInfo.subject &&
+      classInfo.subject.trim() !== ''
+    );
+  });
+}
+
 async function getClasses() {
   if (!classCache || classCache.length === 0) {
     return await reloadClasses();
@@ -328,10 +395,34 @@ function createTrainInfoEmbed(trainInfo) {
 async function checkTrainInfo(options = {}) {
   const force = options.force || false;
   const replyChannelId = options.channelId || null;
+  const now = dayjs().tz(TZ);
+  const today = now.format('YYYY-MM-DD');
+
+  // 手動実行ではない自動通知のみ夜間制限する
+  if (!force && isInQuietHours(now)) {
+    console.log(`夜間時間帯のため、山手線運行情報チェックをスキップしました: ${now.format('HH:mm')}`);
+    return;
+  }
 
   if (!isTrainInfoEnabled() && !force) {
     console.log('山手線運行情報通知は無効です');
     return;
+  }
+
+  // 手動実行ではない自動通知のみ、授業がある日か確認する
+  if (!force && isTrainNotifyOnlyClassDays()) {
+    try {
+      const classes = await reloadClasses();
+
+      if (!hasClassesOnDate(classes, today)) {
+        console.log(`授業がない日のため、山手線運行情報通知をスキップしました: ${today}`);
+        return;
+      }
+    } catch (error) {
+      console.error('授業日の確認に失敗したため、山手線運行情報通知をスキップしました');
+      console.error(getErrorMessage(error));
+      return;
+    }
   }
 
   const trainInfo = await fetchTrainInfo();
@@ -361,9 +452,9 @@ async function checkTrainInfo(options = {}) {
 
   const shouldSend =
     force ||
-    trainInfo.hasTrouble && changed ||
+    (trainInfo.hasTrouble && changed) ||
     recovered ||
-    shouldNotifyNormalTrainStatus() && changed;
+    (shouldNotifyNormalTrainStatus() && changed);
 
   if (!shouldSend) {
     console.log(`${trainInfo.lineName} 運行情報に変化なし: ${trainInfo.status}`);
@@ -520,7 +611,13 @@ function createScheduleListEmbed(title, targetDate, classes) {
 }
 
 async function sendDailySummary() {
-  const today = dayjs().tz(TZ).format('YYYY-MM-DD');
+  const now = dayjs().tz(TZ);
+  const today = now.format('YYYY-MM-DD');
+
+  if (isInQuietHours(now)) {
+    console.log(`夜間時間帯のため、今日の授業一覧送信をスキップしました: ${now.format('HH:mm')}`);
+    return;
+  }
 
   if (!DEFAULT_CHANNEL_ID) {
     console.log('DEFAULT_CHANNEL_ID が設定されていないため、朝の授業一覧を送信できません');
@@ -538,21 +635,28 @@ async function sendDailySummary() {
   try {
     const classes = await reloadClasses();
 
+    if (isDailySummaryOnlyClassDays() && !hasClassesOnDate(classes, today)) {
+      console.log(`授業がない日のため、今日の授業一覧送信をスキップしました: ${today}`);
+      return;
+    }
+
     const embed = createScheduleListEmbed(
-      '今日の授業予定だわん。',
+      '今日の授業予定',
       today,
       classes
     );
 
-    const channel = await client.channels.fetch(DEFAULT_CHANNEL_ID);
+    const channelResult = await getNotificationChannel(DEFAULT_CHANNEL_ID);
 
-    if (!channel) {
-      console.log(`チャンネルが見つかりません: ${DEFAULT_CHANNEL_ID}`);
+    if (!channelResult.ok) {
+      console.log(`今日の授業一覧の通知をスキップしました: ${channelResult.reason}`);
       return;
     }
 
+    const channel = channelResult.channel;
+
     await channel.send({
-      content: 'みんなおはよぉ！本日の授業予定だわん！',
+      content: 'おはようございます。本日の授業予定です。',
       embeds: [embed],
       allowedMentions: {
         parse: [],
@@ -718,6 +822,11 @@ client.once('clientReady', async () => {
   console.log(`ログインしました: ${client.user.tag}`);
   console.log(`通知時間: ${getNotifyBeforeMinutes()}分前`);
   console.log(`朝の授業一覧送信時刻: ${getDailySummaryTime()}`);
+
+  console.log(`夜間通知制限: ${isQuietHoursEnabled() ? '有効' : '無効'}`);
+  console.log(`夜間通知停止時間: ${getQuietHoursStart()}〜${getQuietHoursEnd()}`);
+  console.log(`山手線通知は授業日のみ: ${isTrainNotifyOnlyClassDays() ? 'はい' : 'いいえ'}`);
+  console.log(`朝の授業予定通知は授業日のみ: ${isDailySummaryOnlyClassDays() ? 'はい' : 'いいえ'}`);
 
   await registerCommands().catch(console.error);
 
