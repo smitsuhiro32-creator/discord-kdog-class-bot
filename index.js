@@ -129,6 +129,65 @@ function getDailySummaryTime() {
   return process.env.DAILY_SUMMARY_TIME || '07:00';
 }
 
+function normalizeDateText(value) {
+  const text = String(value || '').trim();
+
+  if (!text) {
+    return '';
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    return text;
+  }
+
+  const formats = [
+    'YYYY/M/D',
+    'YYYY/MM/DD',
+    'YYYY-M-D',
+    'YYYY-MM-DD',
+    'YYYY年M月D日',
+  ];
+
+  for (const format of formats) {
+    const parsed = dayjs(text, format, true);
+
+    if (parsed.isValid()) {
+      return parsed.format('YYYY-MM-DD');
+    }
+  }
+
+  return text;
+}
+
+function normalizeTimeText(value) {
+  const text = String(value || '').trim();
+
+  if (!text) {
+    return '';
+  }
+
+  const formats = [
+    'H:mm',
+    'HH:mm',
+    'H:mm:ss',
+    'HH:mm:ss',
+  ];
+
+  for (const format of formats) {
+    const parsed = dayjs(text, format, true);
+
+    if (parsed.isValid()) {
+      return parsed.format('HH:mm');
+    }
+  }
+
+  return text;
+}
+
+function isSameMinute(a, b) {
+  return a.format('YYYY-MM-DD HH:mm') === b.format('YYYY-MM-DD HH:mm');
+}
+
 const SENT_FILE = process.env.SENT_FILE || path.join(__dirname, 'sent.json');
 
 let classCache = [];
@@ -221,11 +280,27 @@ async function getNotificationChannel(channelId) {
 }
 
 function loadSent() {
-  if (!fs.existsSync(SENT_FILE)) {
-    fs.writeFileSync(SENT_FILE, JSON.stringify({}, null, 2));
-  }
+  try {
+    if (!fs.existsSync(SENT_FILE)) {
+      fs.writeFileSync(SENT_FILE, JSON.stringify({}, null, 2));
+      return {};
+    }
 
-  return JSON.parse(fs.readFileSync(SENT_FILE, 'utf8'));
+    const text = fs.readFileSync(SENT_FILE, 'utf8').trim();
+
+    if (!text) {
+      fs.writeFileSync(SENT_FILE, JSON.stringify({}, null, 2));
+      return {};
+    }
+
+    return JSON.parse(text);
+  } catch (error) {
+    console.error('sent.json の読み込みに失敗したため、空で初期化するわん');
+    console.error(getErrorMessage(error));
+
+    fs.writeFileSync(SENT_FILE, JSON.stringify({}, null, 2));
+    return {};
+  }
 }
 
 function saveSent(sent) {
@@ -303,13 +378,13 @@ async function fetchClasses() {
         ] = row;
 
         return {
-          date: date || '',
-          start: start || '',
-          end: end || '',
-          subject: subject || '',
-          room: room || '',
-          teacher: teacher || '',
-          channelId: channelId || DEFAULT_CHANNEL_ID || '',
+          date: normalizeDateText(date),
+          start: normalizeTimeText(start),
+          end: normalizeTimeText(end),
+          subject: String(subject || '').trim(),
+          room: String(room || '').trim(),
+          teacher: String(teacher || '').trim(),
+          channelId: normalizeChannelId(channelId || DEFAULT_CHANNEL_ID || ''),
         };
       });
   } catch (error) {
@@ -343,11 +418,12 @@ function isDailySummaryOnlyClassDays() {
 }
 
 function hasClassesOnDate(classes, targetDate) {
+  const normalizedTargetDate = normalizeDateText(targetDate);
+
   return classes.some((classInfo) => {
     return (
-      classInfo.date === targetDate &&
-      classInfo.subject &&
-      classInfo.subject.trim() !== ''
+      normalizeDateText(classInfo.date) === normalizedTargetDate &&
+      String(classInfo.subject || '').trim() !== ''
     );
   });
 }
@@ -578,13 +654,19 @@ async function checkTrainInfo(options = {}) {
 }
 
 async function notifyClass(classInfo) {
-  const channel = await client.channels.fetch(classInfo.channelId);
+  const channelResult = await getNotificationChannel(classInfo.channelId);
 
-  if (!channel) {
-    console.log(`チャンネルが見つからないわん: ${classInfo.channelId}`);
-    return;
+  if (!channelResult.ok) {
+    console.log(`授業通知をスキップしたわん: ${classInfo.subject}`);
+    console.log(channelResult.reason);
+
+    return {
+      ok: false,
+      reason: channelResult.reason,
+    };
   }
 
+  const channel = channelResult.channel;
   const notifyBefore = getNotifyBeforeMinutes();
 
   const embed = new EmbedBuilder()
@@ -619,7 +701,8 @@ async function notifyClass(classInfo) {
     )
     .setFooter({
       text: `${notifyBefore}分前通知`,
-    });
+    })
+    .setTimestamp();
 
   await channel.send({
     content: `${notifyBefore}分後に授業があるわんよ！`,
@@ -629,17 +712,22 @@ async function notifyClass(classInfo) {
     },
   });
 
-  console.log(`通知しました: ${classInfo.subject}`);
+  console.log(`授業通知を送信したわん: ${classInfo.subject}`);
+
+  return {
+    ok: true,
+    reason: '',
+  };
 }
 
 function createScheduleListEmbed(title, targetDate, classes) {
   const targetClasses = classes
-    .filter((classInfo) => classInfo.date === targetDate)
-    .sort((a, b) => {
-      const timeA = a.start || '';
-      const timeB = b.start || '';
-      return timeA.localeCompare(timeB);
-    });
+    .filter((classInfo) => {
+      return (
+        normalizeDateText(classInfo.date) === normalizeDateText(targetDate) &&
+        String(classInfo.subject || '').trim() !== ''
+      );
+    })
 
   let description = '';
 
