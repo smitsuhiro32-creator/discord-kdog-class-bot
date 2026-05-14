@@ -813,11 +813,9 @@ async function checkSchedule() {
   isCheckingSchedule = true;
 
   try {
-    console.log('授業予定をチェック中...');
+    console.log('授業開始前通知をチェック中だわん...');
 
-    const now = dayjs().tz(TZ);
-    const sent = loadSent();
-
+    const now = dayjs().tz(TZ).second(0).millisecond(0);
     const classes = await reloadClasses();
 
     for (const classInfo of classes) {
@@ -831,7 +829,7 @@ async function checkSchedule() {
       }
 
       const startAt = dayjs.tz(
-        `${classInfo.date} ${classInfo.start}`,
+        `${normalizeDateText(classInfo.date)} ${normalizeTimeText(classInfo.start)}`,
         'YYYY-MM-DD HH:mm',
         TZ
       );
@@ -844,29 +842,45 @@ async function checkSchedule() {
       const notifyBefore = getNotifyBeforeMinutes();
       const notifyAt = startAt.subtract(notifyBefore, 'minute');
 
-      const key = createClassKey(classInfo);
+      // 重要：
+      // 「30分前を過ぎたら」ではなく、
+      // 「授業開始30分前のその1分間だけ」通知する
+      if (!isSameMinute(now, notifyAt)) {
+        continue;
+      }
 
-      const shouldNotify =
-        now.isAfter(notifyAt) &&
-        now.isBefore(startAt) &&
-        !sent[key];
+      const key = createClassKey({
+        ...classInfo,
+        date: normalizeDateText(classInfo.date),
+        start: normalizeTimeText(classInfo.start),
+      });
 
-      if (shouldNotify) {
-        // 先に通知済みとして保存して、処理重複による二重送信を防ぐ
-        sent[key] = {
-          status: 'sending',
-          notifiedAt: now.format(),
-          subject: classInfo.subject,
-          date: classInfo.date,
-          start: classInfo.start,
-          channelId: classInfo.channelId,
-        };
-        saveSent(sent);
+      // 送信直前に sent.json を読み直して二重送信を防ぐ
+      const latestSent = loadSent();
 
-        try {
-          await notifyClass(classInfo);
+      if (latestSent[key]) {
+        console.log(`すでに通知済みなのでスキップするわん: ${classInfo.subject}`);
+        continue;
+      }
 
-          sent[key] = {
+      latestSent[key] = {
+        status: 'sending',
+        notifiedAt: now.format(),
+        subject: classInfo.subject,
+        date: classInfo.date,
+        start: classInfo.start,
+        channelId: classInfo.channelId,
+      };
+
+      saveSent(latestSent);
+
+      try {
+        const result = await notifyClass(classInfo);
+
+        const updatedSent = loadSent();
+
+        if (result.ok) {
+          updatedSent[key] = {
             status: 'sent',
             notifiedAt: dayjs().tz(TZ).format(),
             subject: classInfo.subject,
@@ -874,15 +888,28 @@ async function checkSchedule() {
             start: classInfo.start,
             channelId: classInfo.channelId,
           };
-          saveSent(sent);
-        } catch (error) {
-          console.error(`通知に失敗しました: ${classInfo.subject}`);
-          console.error(error);
-
-          // 送信失敗時は次回再送できるように通知済み記録を消す
-          delete sent[key];
-          saveSent(sent);
+        } else {
+          updatedSent[key] = {
+            status: 'skipped',
+            skippedAt: dayjs().tz(TZ).format(),
+            reason: result.reason,
+            subject: classInfo.subject,
+            date: classInfo.date,
+            start: classInfo.start,
+            channelId: classInfo.channelId,
+          };
         }
+
+        saveSent(updatedSent);
+      } catch (error) {
+        console.error(`通知に失敗しました: ${classInfo.subject}`);
+        console.error(error);
+
+        const failedSent = loadSent();
+
+        delete failedSent[key];
+
+        saveSent(failedSent);
       }
     }
   } catch (error) {
@@ -905,7 +932,7 @@ client.once('clientReady', async () => {
 
   await registerCommands().catch(console.error);
 
-  checkSchedule().catch(console.error);
+  // checkSchedule().catch(console.error);
 
   // 毎分、授業開始前通知をチェック
   cron.schedule('* * * * *', () => {
