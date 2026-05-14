@@ -634,7 +634,7 @@ async function checkTrainInfo(options = {}) {
   // ただし sent.json の通知状態は変更しない
   if (force) {
     await channel.send({
-      content: `${trainInfo.lineName} の現在の運行情報です。`,
+      content: `${trainInfo.lineName} の現在の運行情報わん！`,
       embeds: [embed],
       allowedMentions: {
         parse: [],
@@ -798,7 +798,7 @@ async function notifyClass(classInfo) {
   const notifyBefore = getNotifyBeforeMinutes();
 
   const embed = new EmbedBuilder()
-    .setTitle('授業のお知らせだわん。')
+    .setTitle('授業のお知らせ')
     .setColor(0x3b82f6)
     .addFields(
       {
@@ -833,7 +833,7 @@ async function notifyClass(classInfo) {
     .setTimestamp();
 
   await channel.send({
-    content: `${notifyBefore}分後に授業があるわんよ！`,
+    content: `${notifyBefore}分後に授業があるわん！`,
     embeds: [embed],
     allowedMentions: {
       parse: [],
@@ -944,7 +944,7 @@ async function sendDailySummary() {
     const channel = channelResult.channel;
 
     await channel.send({
-      content: 'おはようございます。本日の授業予定です。',
+      content: 'おはようなのわん！本日の授業予定わん！',
       embeds: [embed],
       allowedMentions: {
         parse: [],
@@ -1238,7 +1238,7 @@ client.on('interactionCreate', async (interaction) => {
       const today = dayjs().tz(TZ).format('YYYY-MM-DD');
 
       const embed = createScheduleListEmbed(
-        '今日の授業一覧だわん',
+        '今日の授業一覧',
         today,
         classes
       );
@@ -1433,7 +1433,7 @@ client.on('interactionCreate', async (interaction) => {
       const embed = createTrainInfoEmbed(trainInfo);
 
       await interaction.editReply({
-        content: `${trainInfo.lineName} の現在の運行情報です。`,
+        content: `${trainInfo.lineName} の現在の運行情報わん！。`,
         embeds: [embed],
       });
     } catch (error) {
