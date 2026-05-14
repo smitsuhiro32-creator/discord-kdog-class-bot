@@ -148,6 +148,78 @@ function getErrorMessage(error) {
   );
 }
 
+function getDiscordErrorCode(error) {
+  return error?.code || error?.rawError?.code;
+}
+
+function isUnknownChannelError(error) {
+  return getDiscordErrorCode(error) === 10003;
+}
+
+function normalizeChannelId(channelId) {
+  return String(channelId || '').trim();
+}
+
+async function getNotificationChannel(channelId) {
+  const normalizedChannelId = normalizeChannelId(channelId);
+
+  if (!normalizedChannelId) {
+    return {
+      ok: false,
+      reason: '通知先チャンネルIDが空だわん…',
+      channel: null,
+    };
+  }
+
+  if (!/^\d{17,20}$/.test(normalizedChannelId)) {
+    return {
+      ok: false,
+      reason: `通知先チャンネルIDの形式が変だわん…: ${normalizedChannelId}`,
+      channel: null,
+    };
+  }
+
+  try {
+    const channel = await client.channels.fetch(normalizedChannelId);
+
+    if (!channel) {
+      return {
+        ok: false,
+        reason: `チャンネルが見つからないわん…: ${normalizedChannelId}`,
+        channel: null,
+      };
+    }
+
+    if (!channel.isTextBased()) {
+      return {
+        ok: false,
+        reason: `このチャンネルにはメッセージを送れないわん…: ${normalizedChannelId}`,
+        channel: null,
+      };
+    }
+
+    return {
+      ok: true,
+      reason: '',
+      channel,
+    };
+  } catch (error) {
+    if (isUnknownChannelError(error)) {
+      return {
+        ok: false,
+        reason: `Unknown Channelだわん… チャンネルが存在しない、削除済み、またはBotから見えていない可能性があるわん: ${normalizedChannelId}`,
+        channel: null,
+      };
+    }
+
+    return {
+      ok: false,
+      reason: `チャンネル取得に失敗したわん…: ${getErrorMessage(error)}`,
+      channel: null,
+    };
+  }
+}
+
 function loadSent() {
   if (!fs.existsSync(SENT_FILE)) {
     fs.writeFileSync(SENT_FILE, JSON.stringify({}, null, 2));
