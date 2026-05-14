@@ -307,6 +307,24 @@ function saveSent(sent) {
   fs.writeFileSync(SENT_FILE, JSON.stringify(sent, null, 2));
 }
 
+function resetTrainInfoState() {
+  const sent = loadSent();
+  let deletedCount = 0;
+
+  for (const key of Object.keys(sent)) {
+    if (key.startsWith('train_info_')) {
+      delete sent[key];
+      deletedCount++;
+    }
+  }
+
+  saveSent(sent);
+
+  console.log(`山手線運行情報の通知状態をリセットしたわん: ${deletedCount}件`);
+
+  return deletedCount;
+}
+
 function getGoogleCredentialsPath() {
   const envPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
 
@@ -583,7 +601,16 @@ async function checkTrainInfo(options = {}) {
   }
 
   const sent = loadSent();
+
+  // 山手線の通知状態を保存するキー
+  // 既存コードとの互換性のため _last のまま使う
   const stateKey = `train_info_${trainInfo.lineName}_last`;
+
+  const previous = sent[stateKey] || {};
+
+  const wasTroubleAlreadyNotified =
+    previous.activeTrouble === true ||
+    previous.hasTrouble === true;
 
   const currentHash = createHash(
     JSON.stringify({
@@ -592,22 +619,6 @@ async function checkTrainInfo(options = {}) {
       updatedAt: trainInfo.updatedAt,
     })
   );
-
-  const previous = sent[stateKey];
-
-  const changed = !previous || previous.hash !== currentHash;
-  const recovered = previous?.hasTrouble === true && trainInfo.hasTrouble === false;
-
-  const shouldSend =
-    force ||
-    (trainInfo.hasTrouble && changed) ||
-    recovered ||
-    (shouldNotifyNormalTrainStatus() && changed);
-
-  if (!shouldSend) {
-    console.log(`${trainInfo.lineName} 運行情報に変化なし: ${trainInfo.status}`);
-    return;
-  }
 
   const channelResult = await getNotificationChannel(channelId);
 
@@ -619,38 +630,155 @@ async function checkTrainInfo(options = {}) {
   const channel = channelResult.channel;
   const embed = createTrainInfoEmbed(trainInfo);
 
-  let content = '';
-
+  // /train など手動実行の場合は、状態に関係なく現在情報を表示する
+  // ただし sent.json の通知状態は変更しない
   if (force) {
-    content = `${trainInfo.lineName} の現在の運行情報です。`;
-  } else if (trainInfo.hasTrouble) {
-    content = `${trainInfo.lineName} に運行情報があります。`;
-  } else if (recovered) {
-    content = `${trainInfo.lineName} は平常運転に戻った可能性があります。`;
-  } else {
-    content = `${trainInfo.lineName} の運行情報です。`;
+    await channel.send({
+      content: `${trainInfo.lineName} の現在の運行情報です。`,
+      embeds: [embed],
+      allowedMentions: {
+        parse: [],
+      },
+    });
+
+    console.log(`${trainInfo.lineName} の運行情報を手動送信しました: ${trainInfo.status}`);
+    return;
   }
 
-  await channel.send({
-    content,
-    embeds: [embed],
-    allowedMentions: {
-      parse: [],
-    },
-  });
+  // 遅延・運転見合わせなどがある場合
+  if (trainInfo.hasTrouble) {
+    // すでに遅延中として通知済みなら、何が変わっても追加送信しない
+    if (wasTroubleAlreadyNotified) {
+      sent[stateKey] = {
+        ...previous,
+        activeTrouble: true,
+        hasTrouble: true,
 
+        // 最新情報だけ保存する
+        latestHash: currentHash,
+        latestStatus: trainInfo.status,
+        latestMessage: trainInfo.message,
+        latestUpdatedAt: trainInfo.updatedAt,
+        lastCheckedAt: now.format(),
+      };
+
+      saveSent(sent);
+
+      console.log(`${trainInfo.lineName} は遅延中だけど、すでに通知済みなので送信しないわん`);
+      return;
+    }
+
+    // 遅延期間の最初の1回だけ通知する
+    await channel.send({
+      content: `${trainInfo.lineName} に遅延や運行情報があるみたいだわん…気をつけてわん！`,
+      embeds: [embed],
+      allowedMentions: {
+        parse: [],
+      },
+    });
+
+    sent[stateKey] = {
+      activeTrouble: true,
+      hasTrouble: true,
+
+      firstHash: currentHash,
+      firstStatus: trainInfo.status,
+      firstMessage: trainInfo.message,
+      firstUpdatedAt: trainInfo.updatedAt,
+      firstNotifiedAt: now.format(),
+
+      latestHash: currentHash,
+      latestStatus: trainInfo.status,
+      latestMessage: trainInfo.message,
+      latestUpdatedAt: trainInfo.updatedAt,
+      lastCheckedAt: now.format(),
+    };
+
+    saveSent(sent);
+
+    console.log(`${trainInfo.lineName} の遅延情報を初回通知しました: ${trainInfo.status}`);
+    return;
+  }
+
+  // ここから平常時
+
+  // 直前まで遅延中だった場合、復旧通知を1回送って状態をリセットする
+  if (wasTroubleAlreadyNotified) {
+    await channel.send({
+      content: `${trainInfo.lineName} は平常運転に戻った可能性があるわん！よかったわん！`,
+      embeds: [embed],
+      allowedMentions: {
+        parse: [],
+      },
+    });
+
+    sent[stateKey] = {
+      activeTrouble: false,
+      hasTrouble: false,
+
+      recoveredHash: currentHash,
+      recoveredStatus: trainInfo.status,
+      recoveredMessage: trainInfo.message,
+      recoveredUpdatedAt: trainInfo.updatedAt,
+      recoveredAt: now.format(),
+
+      latestHash: currentHash,
+      latestStatus: trainInfo.status,
+      latestMessage: trainInfo.message,
+      latestUpdatedAt: trainInfo.updatedAt,
+      lastCheckedAt: now.format(),
+    };
+
+    saveSent(sent);
+
+    console.log(`${trainInfo.lineName} の復旧通知を送信しました: ${trainInfo.status}`);
+    return;
+  }
+
+  // 平常時で、まだ遅延通知もしていない場合は基本送信しない
+  // TRAIN_NOTIFY_NORMAL=true の場合だけ、平常情報を送る
+  if (shouldNotifyNormalTrainStatus()) {
+    await channel.send({
+      content: `${trainInfo.lineName} の運行情報です。`,
+      embeds: [embed],
+      allowedMentions: {
+        parse: [],
+      },
+    });
+
+    sent[stateKey] = {
+      activeTrouble: false,
+      hasTrouble: false,
+
+      latestHash: currentHash,
+      latestStatus: trainInfo.status,
+      latestMessage: trainInfo.message,
+      latestUpdatedAt: trainInfo.updatedAt,
+      lastCheckedAt: now.format(),
+      normalNotifiedAt: now.format(),
+    };
+
+    saveSent(sent);
+
+    console.log(`${trainInfo.lineName} の平常情報を通知しました: ${trainInfo.status}`);
+    return;
+  }
+
+  // 平常時は状態だけ保存して通知しない
   sent[stateKey] = {
-    hash: currentHash,
-    status: trainInfo.status,
-    message: trainInfo.message,
-    updatedAt: trainInfo.updatedAt,
-    hasTrouble: trainInfo.hasTrouble,
-    checkedAt: dayjs().tz(TZ).format(),
+    activeTrouble: false,
+    hasTrouble: false,
+
+    latestHash: currentHash,
+    latestStatus: trainInfo.status,
+    latestMessage: trainInfo.message,
+    latestUpdatedAt: trainInfo.updatedAt,
+    lastCheckedAt: now.format(),
   };
 
   saveSent(sent);
 
-  console.log(`${trainInfo.lineName} 運行情報を通知しました: ${trainInfo.status}`);
+  console.log(`${trainInfo.lineName} は平常、または通知不要です: ${trainInfo.status}`);
 }
 
 async function notifyClass(classInfo) {
@@ -1230,9 +1358,13 @@ client.on('interactionCreate', async (interaction) => {
       });
 
       const classes = await reloadClasses();
+      const resetTrainCount = resetTrainInfoState();
 
       await interaction.editReply(
-        `スプレッドシートを再読み込みしたわん...\n読み込み件数: ${classes.length}件\n最終読み込み: ${lastLoadedAt.format('YYYY-MM-DD HH:mm:ss')}`
+        `スプレッドシートを再読み込みしたわん...\n` +
+        `読み込み件数: ${classes.length}件\n` +
+        `最終読み込み: ${lastLoadedAt.format('YYYY-MM-DD HH:mm:ss')}\n` +
+        `山手線通知状態もリセットしたわん: ${resetTrainCount}件`
       );
     } catch (error) {
       console.error(error);
