@@ -982,13 +982,13 @@ async function notifyClass(classInfo) {
     .setTimestamp();
 
   await channel.send({
-  content: `${notifyBefore}分後に授業があるわんよ！\n遅刻・欠席・公欠の申請は下のボタンからできるわん！`,
-  embeds: [embed],
-  components: [createClassActionButtons(classInfo)],
-  allowedMentions: {
-    parse: [],
-  },
-});
+    content: `${notifyBefore}分後に授業があるわんよ！\n遅刻・欠席・公欠の申請は下のボタンからできるわん！`,
+    embeds: [embed],
+    components: [createClassActionButtons(classInfo)],
+    allowedMentions: {
+      parse: [],
+    },
+  });
 
   console.log(`授業通知を送信したわん: ${classInfo.subject}`);
 
@@ -1379,7 +1379,7 @@ client.once('clientReady', async () => {
     timezone: TZ,
   });
 
-    // 毎分、提出物の期限リマインドをチェック
+  // 毎分、提出物の期限リマインドをチェック
   cron.schedule('* * * * *', () => {
     checkAssignments().catch(console.error);
   }, {
