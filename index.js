@@ -11,7 +11,11 @@ const {
   EmbedBuilder,
   SlashCommandBuilder,
   PermissionFlagsBits,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
 } = require('discord.js');
+
 
 const dayjs = require('dayjs');
 const utc = require('dayjs/plugin/utc');
@@ -32,6 +36,29 @@ const {
 } = process.env;
 
 const TZ = TIMEZONE || 'Asia/Tokyo';
+const LATE_ABSENCE_FORM_URL =
+  process.env.LATE_ABSENCE_FORM_URL ||
+  'https://form.run/@vantan-4BPq5FGLinHwt8WrL2B1';
+
+const EXCUSED_ABSENCE_FORM_URL =
+  process.env.EXCUSED_ABSENCE_FORM_URL ||
+  'https://form.run/@vantan-Up6BaMrxWzXo4TKaeT4L';
+
+// 遅刻/欠席フォームの「報告事項対象日（遅刻または欠席する日付）」
+// 確認済み: _field_8
+const LATE_ABSENCE_DATE_FIELD =
+  process.env.LATE_ABSENCE_DATE_FIELD || '_field_8';
+
+// 遅刻/欠席フォームの「報告内容」
+// フォーム側の項目コードが違う可能性があるので、Render環境変数で変えられるようにしておく
+const LATE_ABSENCE_TYPE_FIELD =
+  process.env.LATE_ABSENCE_TYPE_FIELD || '_field_9';
+
+// 公欠フォームの日付項目。
+// 正確な _field_番号がわかったら Render 環境変数で設定してください。
+// 未設定なら、公欠フォームは日付自動入力なしで開きます。
+const EXCUSED_ABSENCE_DATE_FIELD =
+  process.env.EXCUSED_ABSENCE_DATE_FIELD || '';
 function getNotifyBeforeMinutes() {
   const minutes = Number(process.env.NOTIFY_MINUTES_BEFORE || 30);
 
@@ -129,6 +156,19 @@ function getDailySummaryTime() {
   return process.env.DAILY_SUMMARY_TIME || '07:00';
 }
 
+function getAssignmentRange() {
+  return process.env.ASSIGNMENT_RANGE || '提出物!A2:F';
+}
+
+function getAssignmentReminderHoursBefore() {
+  const text = process.env.ASSIGNMENT_REMINDER_HOURS_BEFORE || '24,3,1';
+
+  return text
+    .split(',')
+    .map((value) => Number(value.trim()))
+    .filter((value) => !Number.isNaN(value) && value > 0);
+}
+
 function normalizeDateText(value) {
   const text = String(value || '').trim();
 
@@ -193,6 +233,7 @@ const SENT_FILE = process.env.SENT_FILE || path.join(__dirname, 'sent.json');
 let classCache = [];
 let lastLoadedAt = null;
 let isCheckingSchedule = false;
+let isCheckingAssignments = false;
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
@@ -277,6 +318,69 @@ async function getNotificationChannel(channelId) {
       channel: null,
     };
   }
+}
+
+function buildFormUrl(baseUrl, params = {}) {
+  const url = new URL(baseUrl);
+
+  for (const [key, value] of Object.entries(params)) {
+    if (!key || value === undefined || value === null || value === '') {
+      continue;
+    }
+
+    url.searchParams.set(key, String(value));
+  }
+
+  return url.toString();
+}
+
+function buildLateReportUrl(classInfo) {
+  const classDate = normalizeDateText(classInfo.date);
+
+  return buildFormUrl(LATE_ABSENCE_FORM_URL, {
+    [LATE_ABSENCE_DATE_FIELD]: classDate,
+    [LATE_ABSENCE_TYPE_FIELD]: '遅刻',
+  });
+}
+
+function buildAbsenceReportUrl(classInfo) {
+  const classDate = normalizeDateText(classInfo.date);
+
+  return buildFormUrl(LATE_ABSENCE_FORM_URL, {
+    [LATE_ABSENCE_DATE_FIELD]: classDate,
+    [LATE_ABSENCE_TYPE_FIELD]: '欠席',
+  });
+}
+
+function buildExcusedAbsenceUrl(classInfo) {
+  const classDate = normalizeDateText(classInfo.date);
+
+  const params = {};
+
+  if (EXCUSED_ABSENCE_DATE_FIELD) {
+    params[EXCUSED_ABSENCE_DATE_FIELD] = classDate;
+  }
+
+  return buildFormUrl(EXCUSED_ABSENCE_FORM_URL, params);
+}
+
+function createClassActionButtons(classInfo) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setLabel('遅刻報告')
+      .setStyle(ButtonStyle.Link)
+      .setURL(buildLateReportUrl(classInfo)),
+
+    new ButtonBuilder()
+      .setLabel('欠席報告')
+      .setStyle(ButtonStyle.Link)
+      .setURL(buildAbsenceReportUrl(classInfo)),
+
+    new ButtonBuilder()
+      .setLabel('公欠申請')
+      .setStyle(ButtonStyle.Link)
+      .setURL(buildExcusedAbsenceUrl(classInfo))
+  );
 }
 
 function loadSent() {
@@ -407,6 +511,51 @@ async function fetchClasses() {
       });
   } catch (error) {
     console.error('Google Sheets の取得に失敗しちゃったわん');
+    console.error(getErrorMessage(error));
+    throw error;
+  }
+}
+
+async function fetchAssignments() {
+  try {
+    const sheets = await getSheetsClient();
+    const range = getAssignmentRange();
+
+    console.log('提出物シートを読み込み開始だわん');
+    console.log(`ASSIGNMENT_RANGE: ${range}`);
+
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range,
+    });
+
+    const rows = res.data.values || [];
+
+    console.log(`提出物シート読み込み成功だわん: ${rows.length}行`);
+
+    return rows
+      .filter((row) => row && row.some((cell) => cell !== undefined && cell !== ''))
+      .map((row) => {
+        const [
+          dueDate,
+          dueTime,
+          title,
+          subject,
+          submitUrl,
+          channelId,
+        ] = row;
+
+        return {
+          dueDate: normalizeDateText(dueDate),
+          dueTime: normalizeTimeText(dueTime || '23:59'),
+          title: String(title || '').trim(),
+          subject: String(subject || '').trim(),
+          submitUrl: String(submitUrl || '').trim(),
+          channelId: normalizeChannelId(channelId || DEFAULT_CHANNEL_ID || ''),
+        };
+      });
+  } catch (error) {
+    console.error('提出物シートの取得に失敗したわん');
     console.error(getErrorMessage(error));
     throw error;
   }
@@ -833,12 +982,13 @@ async function notifyClass(classInfo) {
     .setTimestamp();
 
   await channel.send({
-    content: `${notifyBefore}分後に授業があるわん！`,
-    embeds: [embed],
-    allowedMentions: {
-      parse: [],
-    },
-  });
+  content: `${notifyBefore}分後に授業があるわんよ！\n遅刻・欠席・公欠の申請は下のボタンからできるわん！`,
+  embeds: [embed],
+  components: [createClassActionButtons(classInfo)],
+  allowedMentions: {
+    parse: [],
+  },
+});
 
   console.log(`授業通知を送信したわん: ${classInfo.subject}`);
 
@@ -896,6 +1046,72 @@ function createScheduleListEmbed(title, targetDate, classes) {
     });
 
   return embed;
+}
+
+function createAssignmentEmbed(assignment, hoursBefore) {
+  const embed = new EmbedBuilder()
+    .setTitle('提出物の期限リマインドだわん！')
+    .setColor(0xf59e0b)
+    .addFields(
+      {
+        name: '提出物',
+        value: assignment.title || '未入力',
+        inline: false,
+      },
+      {
+        name: '授業',
+        value: assignment.subject || '未入力',
+        inline: true,
+      },
+      {
+        name: '期限',
+        value: `${assignment.dueDate || '日付未入力'} ${assignment.dueTime || '時刻未入力'}`,
+        inline: true,
+      },
+      {
+        name: '通知タイミング',
+        value: `期限の${hoursBefore}時間前だわん`,
+        inline: true,
+      }
+    )
+    .setTimestamp();
+
+  if (assignment.submitUrl) {
+    embed.addFields({
+      name: '提出先URL',
+      value: assignment.submitUrl,
+      inline: false,
+    });
+  }
+
+  return embed;
+}
+
+function createAssignmentButtons(assignment) {
+  if (!assignment.submitUrl) {
+    return [];
+  }
+
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setLabel('提出ページを開く')
+        .setStyle(ButtonStyle.Link)
+        .setURL(assignment.submitUrl)
+    ),
+  ];
+}
+
+function createAssignmentKey(assignment, hoursBefore) {
+  return [
+    'assignment',
+    assignment.dueDate,
+    assignment.dueTime,
+    assignment.title,
+    assignment.subject,
+    hoursBefore,
+    assignment.channelId,
+  ].join('_');
 }
 
 async function sendDailySummary() {
@@ -1003,6 +1219,12 @@ async function registerCommands() {
       .setName('train')
       .setDescription('山手線の運行情報を確認するわん')
       .toJSON(),
+
+    new SlashCommandBuilder()
+      .setName('assignments')
+      .setDescription('提出物一覧を確認するわん')
+      .toJSON(),
+
   ];
 
   // 重要：過去に登録したグローバルコマンドを削除する
@@ -1017,7 +1239,7 @@ async function registerCommands() {
     console.log('GUILD_ID が設定されていないわん。サーバー専用コマンドを登録できないわん…');
   }
 
-  console.log('登録コマンドだわん: test, today, tomorrow, reload, send, train');
+  console.log('登録コマンドだわん: test, today, tomorrow, reload, send, train, assignments');
 }
 
 async function checkSchedule() {
@@ -1157,6 +1379,14 @@ client.once('clientReady', async () => {
     timezone: TZ,
   });
 
+    // 毎分、提出物の期限リマインドをチェック
+  cron.schedule('* * * * *', () => {
+    checkAssignments().catch(console.error);
+  }, {
+    timezone: TZ,
+  });
+
+
   // 毎朝の授業一覧送信
   const dailyTime = getDailySummaryTime();
   const [dailyHour, dailyMinute] = dailyTime.split(':');
@@ -1188,6 +1418,100 @@ client.once('clientReady', async () => {
     });
   }
 });
+
+async function checkAssignments() {
+  if (isCheckingAssignments) {
+    console.log('前回の提出物チェックがまだ実行中のため、今回はスキップするわん');
+    return;
+  }
+
+  isCheckingAssignments = true;
+
+  try {
+    console.log('提出物の期限をチェック中だわん...');
+
+    const now = dayjs().tz(TZ).second(0).millisecond(0);
+    const assignments = await fetchAssignments();
+    const reminderHours = getAssignmentReminderHoursBefore();
+
+    for (const assignment of assignments) {
+      if (!assignment.dueDate || !assignment.dueTime || !assignment.title) {
+        continue;
+      }
+
+      if (!assignment.channelId) {
+        console.log(`提出物の通知先チャンネルIDがありません: ${assignment.title}`);
+        continue;
+      }
+
+      const dueAt = dayjs.tz(
+        `${assignment.dueDate} ${assignment.dueTime}`,
+        'YYYY-MM-DD HH:mm',
+        TZ
+      );
+
+      if (!dueAt.isValid()) {
+        console.log(`提出物の日付または時刻の形式が不正です: ${assignment.title}`);
+        continue;
+      }
+
+      for (const hoursBefore of reminderHours) {
+        const notifyAt = dueAt.subtract(hoursBefore, 'hour');
+
+        // 指定時間前のその1分だけ通知
+        if (!isSameMinute(now, notifyAt)) {
+          continue;
+        }
+
+        const key = createAssignmentKey(assignment, hoursBefore);
+        const sent = loadSent();
+
+        if (sent[key]) {
+          console.log(`提出物リマインドは送信済みだわん: ${assignment.title} / ${hoursBefore}時間前`);
+          continue;
+        }
+
+        const channelResult = await getNotificationChannel(assignment.channelId);
+
+        if (!channelResult.ok) {
+          console.log(`提出物リマインドをスキップしたわん: ${channelResult.reason}`);
+          continue;
+        }
+
+        const embed = createAssignmentEmbed(assignment, hoursBefore);
+
+        await channelResult.channel.send({
+          content: `提出物の期限が近いわん！あと${hoursBefore}時間だわん！`,
+          embeds: [embed],
+          components: createAssignmentButtons(assignment),
+          allowedMentions: {
+            parse: [],
+          },
+        });
+
+        sent[key] = {
+          status: 'sent',
+          sentAt: dayjs().tz(TZ).format(),
+          title: assignment.title,
+          subject: assignment.subject,
+          dueDate: assignment.dueDate,
+          dueTime: assignment.dueTime,
+          hoursBefore,
+          channelId: assignment.channelId,
+        };
+
+        saveSent(sent);
+
+        console.log(`提出物リマインドを送信したわん: ${assignment.title} / ${hoursBefore}時間前`);
+      }
+    }
+  } catch (error) {
+    console.error('提出物リマインドチェック中にエラーが発生したわん');
+    console.error(getErrorMessage(error));
+  } finally {
+    isCheckingAssignments = false;
+  }
+}
 
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
@@ -1446,6 +1770,75 @@ client.on('interactionCreate', async (interaction) => {
       } else {
         await interaction.reply({
           content: `山手線の運行情報取得に失敗しました。\n原因: ${getErrorMessage(error)}`,
+          ephemeral: true,
+        });
+      }
+    }
+
+    return;
+  }
+
+  if (interaction.commandName === 'assignments') {
+    try {
+      await interaction.deferReply();
+
+      const assignments = await fetchAssignments();
+      const now = dayjs().tz(TZ);
+
+      const upcoming = assignments
+        .filter((assignment) => {
+          const dueAt = dayjs.tz(
+            `${assignment.dueDate} ${assignment.dueTime}`,
+            'YYYY-MM-DD HH:mm',
+            TZ
+          );
+
+          return dueAt.isValid() && dueAt.isAfter(now);
+        })
+        .sort((a, b) => {
+          const aTime = `${a.dueDate} ${a.dueTime}`;
+          const bTime = `${b.dueDate} ${b.dueTime}`;
+          return aTime.localeCompare(bTime);
+        })
+        .slice(0, 10);
+
+      const embed = new EmbedBuilder()
+        .setTitle('提出物一覧だわん！')
+        .setColor(0xf59e0b)
+        .setTimestamp();
+
+      if (upcoming.length === 0) {
+        embed.setDescription('今後の提出物は見つからなかったわん！');
+      } else {
+        embed.setDescription(
+          upcoming
+            .map((assignment, index) => {
+              return [
+                `**${index + 1}. ${assignment.title || '提出物名未入力'}**`,
+                `授業：${assignment.subject || '未入力'}`,
+                `期限：${assignment.dueDate} ${assignment.dueTime}`,
+                assignment.submitUrl ? `提出先：${assignment.submitUrl}` : '',
+              ]
+                .filter(Boolean)
+                .join('\n');
+            })
+            .join('\n\n')
+        );
+      }
+
+      await interaction.editReply({
+        embeds: [embed],
+      });
+    } catch (error) {
+      console.error(error);
+
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply(
+          `提出物一覧の取得に失敗したわん...\n原因: ${getErrorMessage(error)}`
+        );
+      } else {
+        await interaction.reply({
+          content: `提出物一覧の取得に失敗したわん...\n原因: ${getErrorMessage(error)}`,
           ephemeral: true,
         });
       }
